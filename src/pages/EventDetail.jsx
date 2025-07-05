@@ -4,16 +4,20 @@ import { motion } from 'framer-motion';
 import * as FiIcons from 'react-icons/fi';
 import SafeIcon from '../common/SafeIcon';
 import { useCertificate } from '../context/CertificateContext';
+import { certificateEmailService } from '../services/certificateEmailService';
 
-const { FiArrowLeft, FiEdit, FiUsers, FiUserPlus, FiAward, FiDownload, FiMail, FiTrash2, FiUpload } = FiIcons;
+const { FiArrowLeft, FiEdit, FiUsers, FiUserPlus, FiAward, FiDownload, FiMail, FiTrash2, FiUpload, FiSend } = FiIcons;
 
 function EventDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { events, attendees, templates, certificates, dispatch } = useCertificate();
+  const { events, attendees, templates, certificates, settings, dispatch } = useCertificate();
   const [activeTab, setActiveTab] = useState('overview');
   const [showAddAttendeeModal, setShowAddAttendeeModal] = useState(false);
   const [showBulkUploadModal, setShowBulkUploadModal] = useState(false);
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailResults, setEmailResults] = useState(null);
   const [newAttendee, setNewAttendee] = useState({
     name: '',
     email: '',
@@ -45,16 +49,13 @@ function EventDetail() {
     e.preventDefault();
     dispatch({
       type: 'ADD_ATTENDEE',
-      payload: {
-        ...newAttendee,
-        eventId: id
-      }
+      payload: { ...newAttendee, eventId: id }
     });
     setNewAttendee({ name: '', email: '', status: 'registered' });
     setShowAddAttendeeModal(false);
   };
 
-  const handleGenerateCertificates = () => {
+  const handleGenerateCertificates = async () => {
     const completedAttendees = eventAttendees.filter(a => a.status === 'completed');
     
     if (completedAttendees.length === 0) {
@@ -80,8 +81,50 @@ function EventDetail() {
       status: 'generated'
     }));
 
-    dispatch({ type: 'BULK_ADD_CERTIFICATES', payload: newCertificates });
+    dispatch({
+      type: 'BULK_ADD_CERTIFICATES',
+      payload: newCertificates
+    });
+
     alert(`${newCertificates.length} certificates generated successfully!`);
+  };
+
+  const handleSendCertificateEmails = async () => {
+    const certificatesToSend = eventCertificates.filter(c => c.status === 'generated');
+    
+    if (certificatesToSend.length === 0) {
+      alert('No certificates available to send. Please generate certificates first.');
+      return;
+    }
+
+    setEmailSending(true);
+    setEmailResults(null);
+
+    try {
+      const results = await certificateEmailService.sendBulkCertificateEmails(
+        certificatesToSend,
+        settings
+      );
+
+      setEmailResults(results);
+      
+      // Update certificate statuses
+      results.successfulEmails.forEach(result => {
+        dispatch({
+          type: 'UPDATE_CERTIFICATE_STATUS',
+          payload: {
+            id: certificatesToSend.find(c => c.certificateId === result.certificateId)?.id,
+            status: 'sent'
+          }
+        });
+      });
+
+      setShowEmailModal(true);
+    } catch (error) {
+      alert(`Failed to send emails: ${error.message}`);
+    } finally {
+      setEmailSending(false);
+    }
   };
 
   const handleBulkUpload = (e) => {
@@ -107,10 +150,15 @@ function EventDetail() {
         })
         .filter(attendee => attendee.name && attendee.email);
 
-      dispatch({ type: 'BULK_ADD_ATTENDEES', payload: newAttendees });
+      dispatch({
+        type: 'BULK_ADD_ATTENDEES',
+        payload: newAttendees
+      });
+
       setShowBulkUploadModal(false);
       alert(`${newAttendees.length} attendees added successfully!`);
     };
+
     reader.readAsText(file);
   };
 
@@ -159,6 +207,18 @@ function EventDetail() {
             </div>
           </div>
           <div className="flex items-center space-x-4">
+            <button
+              onClick={handleSendCertificateEmails}
+              disabled={emailSending || eventCertificates.length === 0}
+              className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all duration-200 disabled:opacity-50"
+            >
+              {emailSending ? (
+                <div className="loading-spinner mr-2"></div>
+              ) : (
+                <SafeIcon icon={FiSend} className="w-4 h-4 mr-2" />
+              )}
+              {emailSending ? 'Sending...' : 'Send Certificates'}
+            </button>
             <button className="flex items-center px-4 py-2 bg-netflix-gray text-white rounded-lg hover:bg-opacity-80 transition-all duration-200">
               <SafeIcon icon={FiEdit} className="w-4 h-4 mr-2" />
               Edit Event
@@ -240,7 +300,9 @@ function EventDetail() {
                       <p className="text-white">
                         {event.signingAuthority.name}
                         {event.signingAuthority.title && (
-                          <span className="text-netflix-lightgray"> - {event.signingAuthority.title}</span>
+                          <span className="text-netflix-lightgray">
+                            {' '}- {event.signingAuthority.title}
+                          </span>
                         )}
                       </p>
                     </div>
@@ -276,12 +338,17 @@ function EventDetail() {
                       <span className="text-white font-semibold">{eventCertificates.length}</span>
                     </div>
                     <div className="flex justify-between">
+                      <span className="text-netflix-lightgray">Certificates Sent</span>
+                      <span className="text-white font-semibold">
+                        {eventCertificates.filter(c => c.status === 'sent').length}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
                       <span className="text-netflix-lightgray">Completion Rate</span>
                       <span className="text-white font-semibold">
-                        {eventAttendees.length > 0 
+                        {eventAttendees.length > 0
                           ? Math.round((eventAttendees.filter(a => a.status === 'completed').length / eventAttendees.length) * 100)
-                          : 0
-                        }%
+                          : 0}%
                       </span>
                     </div>
                   </div>
@@ -390,13 +457,27 @@ function EventDetail() {
             <div>
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-xl font-semibold text-white">Certificates ({eventCertificates.length})</h2>
-                <button
-                  onClick={handleGenerateCertificates}
-                  className="flex items-center px-4 py-2 bg-netflix-red text-white rounded-lg hover:bg-red-600 transition-all duration-200 netflix-button"
-                >
-                  <SafeIcon icon={FiAward} className="w-4 h-4 mr-2" />
-                  Generate Certificates
-                </button>
+                <div className="flex space-x-4">
+                  <button
+                    onClick={handleSendCertificateEmails}
+                    disabled={emailSending || eventCertificates.filter(c => c.status === 'generated').length === 0}
+                    className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all duration-200 disabled:opacity-50"
+                  >
+                    {emailSending ? (
+                      <div className="loading-spinner mr-2"></div>
+                    ) : (
+                      <SafeIcon icon={FiSend} className="w-4 h-4 mr-2" />
+                    )}
+                    {emailSending ? 'Sending...' : 'Send All'}
+                  </button>
+                  <button
+                    onClick={handleGenerateCertificates}
+                    className="flex items-center px-4 py-2 bg-netflix-red text-white rounded-lg hover:bg-red-600 transition-all duration-200 netflix-button"
+                  >
+                    <SafeIcon icon={FiAward} className="w-4 h-4 mr-2" />
+                    Generate Certificates
+                  </button>
+                </div>
               </div>
 
               {eventCertificates.length > 0 ? (
@@ -440,7 +521,11 @@ function EventDetail() {
                               </div>
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap">
-                              <span className="px-2 py-1 rounded-full text-xs font-medium text-white bg-green-600">
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium text-white ${
+                                certificate.status === 'generated' ? 'bg-green-600' :
+                                certificate.status === 'sent' ? 'bg-blue-600' :
+                                certificate.status === 'downloaded' ? 'bg-netflix-red' : 'bg-gray-600'
+                              }`}>
                                 {certificate.status}
                               </span>
                             </td>
@@ -498,7 +583,6 @@ function EventDetail() {
                 <SafeIcon icon={FiTrash2} className="w-6 h-6" />
               </button>
             </div>
-
             <form onSubmit={handleAddAttendee} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-netflix-lightgray mb-2">
@@ -513,7 +597,6 @@ function EventDetail() {
                   placeholder="Enter attendee name"
                 />
               </div>
-
               <div>
                 <label className="block text-sm font-medium text-netflix-lightgray mb-2">
                   Email *
@@ -527,7 +610,6 @@ function EventDetail() {
                   placeholder="Enter attendee email"
                 />
               </div>
-
               <div>
                 <label className="block text-sm font-medium text-netflix-lightgray mb-2">
                   Status
@@ -543,7 +625,6 @@ function EventDetail() {
                   <option value="absent">Absent</option>
                 </select>
               </div>
-
               <div className="flex justify-end space-x-4 pt-4">
                 <button
                   type="button"
@@ -581,7 +662,6 @@ function EventDetail() {
                 <SafeIcon icon={FiTrash2} className="w-6 h-6" />
               </button>
             </div>
-
             <div className="space-y-4">
               <div>
                 <p className="text-netflix-lightgray text-sm mb-4">
@@ -607,7 +687,6 @@ function EventDetail() {
                   </label>
                 </div>
               </div>
-
               <div className="flex justify-end space-x-4 pt-4">
                 <button
                   onClick={() => setShowBulkUploadModal(false)}
@@ -616,6 +695,87 @@ function EventDetail() {
                   Cancel
                 </button>
               </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Email Results Modal */}
+      {showEmailModal && emailResults && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 modal-overlay">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-netflix-dark rounded-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
+          >
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-bold text-white">Email Results</h2>
+              <button
+                onClick={() => setShowEmailModal(false)}
+                className="text-netflix-lightgray hover:text-white"
+              >
+                <SafeIcon icon={FiTrash2} className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="space-y-6">
+              {/* Summary */}
+              <div className="bg-netflix-gray rounded-lg p-4">
+                <h3 className="text-lg font-semibold text-white mb-3">Summary</h3>
+                <div className="grid grid-cols-3 gap-4 text-center">
+                  <div>
+                    <p className="text-2xl font-bold text-white">{emailResults.total}</p>
+                    <p className="text-netflix-lightgray text-sm">Total</p>
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold text-green-400">{emailResults.successful}</p>
+                    <p className="text-netflix-lightgray text-sm">Successful</p>
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold text-red-400">{emailResults.failed}</p>
+                    <p className="text-netflix-lightgray text-sm">Failed</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Failed Emails */}
+              {emailResults.failed > 0 && (
+                <div className="bg-red-900 bg-opacity-30 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold text-white mb-3">Failed Emails</h3>
+                  <div className="space-y-2">
+                    {emailResults.failedEmails.map((failure, index) => (
+                      <div key={index} className="flex justify-between items-center p-2 bg-red-800 bg-opacity-30 rounded">
+                        <span className="text-white">{failure.email}</span>
+                        <span className="text-red-400 text-sm">{failure.error}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Successful Emails */}
+              {emailResults.successful > 0 && (
+                <div className="bg-green-900 bg-opacity-30 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold text-white mb-3">Successful Emails</h3>
+                  <div className="space-y-2">
+                    {emailResults.successfulEmails.map((success, index) => (
+                      <div key={index} className="flex justify-between items-center p-2 bg-green-800 bg-opacity-30 rounded">
+                        <span className="text-white">{success.email}</span>
+                        <span className="text-green-400 text-sm">✓ Sent</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end pt-6">
+              <button
+                onClick={() => setShowEmailModal(false)}
+                className="px-6 py-2 bg-netflix-red text-white rounded-lg hover:bg-red-600 transition-all duration-200"
+              >
+                Close
+              </button>
             </div>
           </motion.div>
         </div>
